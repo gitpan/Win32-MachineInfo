@@ -1,5 +1,16 @@
 Revision history for Perl extension Win32::MachineInfo.
 
+** 0.05 2003-08-31
+
+Added support for detecting Itanium family processors.
+
+Video and display settings now returned correctly for Windows XP systems.
+
+Thanks to Adam McGrath for these changes.
+
+Fixed the example list of hash keys in the documentation.
+$info was incorrectly used as a reference to a hash ($info->{'key'}).
+
 ** 0.04 2003-01-20
 
 ComputerName now read correctly from the registry.

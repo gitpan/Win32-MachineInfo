@@ -5,9 +5,9 @@ use strict;
 use warnings;
 
 our @EXPORT_OK = qw(GetMachineInfo);
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
-use Win32::TieRegistry qw(:KEY_);
+use Win32::TieRegistry qw(:KEY_ :REG_);
 use POSIX qw(ceil strftime);
 
 sub reformat_date
@@ -72,8 +72,14 @@ sub GetMachineInfo
     # BIOS Information
     my $systeminfo = $hklm->{"HARDWARE\\DESCRIPTION\\System"};
     $info->{"system_bios_date"} = reformat_date($systeminfo->{"SystemBiosDate"});
-    if (my $system_bios = $systeminfo->{"SystemBiosVersion"}) {
-        $info->{"system_bios_version"} = ${$system_bios}[0];
+    if (my ($system_bios, $type) = $systeminfo->GetValue("SystemBiosVersion")) {
+        # Catch Itanium systems running Windows 2003 which have a REG_SZ for
+        # the SystemBiosVersion value instead of a REG_MULTI_SZ.
+        if ($type == REG_SZ) {
+            $info->{"system_bios_version"} = $system_bios;
+        } else { # REG_MULTI_SZ 
+            $info->{"system_bios_version"} = ${$system_bios}[0];
+        }
     } else {
         $info->{"system_bios_version"} = "";
     }
@@ -106,32 +112,46 @@ sub GetMachineInfo
         / 1024 / 1024 + 16) . " MB";
 
     # Video Information
+    # We look in HKLM\HARDWARE\DEVICEMAP\VIDEO0 to find a pointer
+    # to the location of the video settings.
     my $videoinfo = $hklm->{"HARDWARE\\DEVICEMAP\\VIDEO"};
     # According to Q200435, Windows will load \Device\Video0
     my $videokeyname = $videoinfo->GetValue("\\Device\\Video0");
-    $videokeyname =~ s/.*\\Services\\//;
-    my $videoservice = $hklm->{"SYSTEM\\CurrentControlSet\\Services\\$videokeyname"};
-    if (my $videoadapter = $videoservice->{"HardwareInformation.AdapterString"}) {
-        $videoadapter =~ s/\x00//g;
+    # On Windows NT/2000 it will refer to a Services entry,
+    # and its name will be a comprehensible string, e.g. voodoo7
+    # REGISTRY\Machine\System\ControlSet001\Services\<display driver>\Device0
+    # On Windows XP it will refer to a Control entry,
+    # and its name will be a GUID
+    # \Registry\Machine\System\CurrentControlSet\Control\Video\<display driver GUID\0000
+    $videokeyname =~ s/.*\\Machine\\//;
+    $videokeyname =~ s/ControlSet\d\d\d/CurrentControlSet/;
+    my $videokey = $hklm->{$videokeyname};
+    if (my $videoadapter = $videokey->{"HardwareInformation.AdapterString"}) {
+        $videoadapter =~ s/\x00//g; # unicode -> ascii
         $info->{"video_adapter"} = $videoadapter;
     } else {
         $info->{"video_adapter"} = "";
     }
 
     # Display Settings
-    my $videoconfig = $hklm->{"SYSTEM\\CurrentControlSet\\Hardware Profiles\\Current\\System\\CurrentControlSet\\Services\\$videokeyname"};
-    my $xres = hex($videoconfig->{"DefaultSettings.XResolution"});
-    my $yres = hex($videoconfig->{"DefaultSettings.YResolution"});
-    my $bits = hex($videoconfig->{"DefaultSettings.BitsPerPel"});
-    if ($xres) {
-        $info->{"display_resolution"} = $xres . "x" . $yres . "x". $bits;
-    } else {
-        $info->{"display_resolution"} = "";
-    }
-    if (my $vref = hex($videoconfig->{"DefaultSettings.VRefresh"})) {
-        $info->{"refresh_rate"} = "$vref Hz";
-    } else {
-        $info->{"refresh_rate"} = "";
+    # On Windows NT/2000 the display settings are stored in
+    # HKLM\SYSTEM\CurrentControlSet\Hardware Profiles\Current\System\CurrentControlSet\SERVICES\<display driver>\VIDEO0
+    # On Windows XP the display settings are stored in
+    # HKLM\SYSTEM\CurrentControlSet\Hardware Profiles\Current\System\CurrentControlSet\Control\VIDEO\<display driver GUID>\0000
+    if (my $videoconfig = $hklm->{"SYSTEM\\CurrentControlSet\\Hardware Profiles\\Current\\$videokeyname"}) {
+        my $xres = hex($videoconfig->{"DefaultSettings.XResolution"} || "");
+        my $yres = hex($videoconfig->{"DefaultSettings.YResolution"} || "");
+        my $bits = hex($videoconfig->{"DefaultSettings.BitsPerPel"} || "");
+        if ($xres) {
+            $info->{"display_resolution"} = $xres . "x" . $yres . "x". $bits;
+        } else {
+            $info->{"display_resolution"} = "";
+        }
+        if (my $vref = hex($videoconfig->{"DefaultSettings.VRefresh"} || "")) {
+            $info->{"refresh_rate"} = "$vref Hz";
+        } else {
+            $info->{"refresh_rate"} = "";
+        }
     }
 
     # Hotfixes (initial support)
@@ -219,6 +239,7 @@ sub cpuid
             "4" => "486",
             "5" => "Pentium",
             "6" => "P6", # Pentium Pro, Pentium II, Pentium III
+            "7" => "Itanium",
             "15" => "Pentium IV",
         },
         "CyrixInstead" => {
@@ -234,8 +255,8 @@ sub cpuid
         "CyrixInstead" => "Cyrix",
     );
 
-    if (my ($family, $model) =
-        ($identifier =~ /^x86 Family (\d+) Model (\d+)/)) {
+    if (my ($arch, $family, $model) =
+        ($identifier =~ /^(x86|ia64) Family (\d+) Model (\d+)/)) {
 
         my $vendor_name = $vendor_table{$vendor};
 
@@ -259,7 +280,7 @@ __END__
 
 =head1 NAME
 
-Win32::MachineInfo - Windows NT/2000 OS and Hardware Info
+Win32::MachineInfo - Basic Windows NT/2000/XP OS and Hardware Info
 
 =head1 SYNOPSIS
 
@@ -276,9 +297,10 @@ Win32::MachineInfo - Windows NT/2000 OS and Hardware Info
 
 =head1 DESCRIPTION
 
-Win32::MachineInfo is a module that retrieves OS, CPU, Memory, and Video
-information from a remote Windows NT/2000 machine. It uses Win32::TieRegistry
-to retrieve the information, which it returns as a hash structure.
+Win32::MachineInfo is a module that retrieves basic OS, CPU, Memory,
+and Video information from a remote Windows NT/2000/XP machine. It uses
+Win32::TieRegistry to retrieve the information, which it returns as a hash
+structure.
 
 =head1 FUNCTIONS
 
@@ -299,43 +321,43 @@ The following fields are returned in %info:
 
 =over 4
 
-=item $info->{'computer_name'}
+=item $info{'computer_name'}
 
-=item $info->{'processor_vendor'}
+=item $info{'processor_vendor'}
 
-=item $info->{'processor_name'}
+=item $info{'processor_name'}
 
-=item $info->{'processor_speed'}
+=item $info{'processor_speed'}
 
-=item $info->{'memory'}
+=item $info{'memory'}
 
-=item $info->{'system_bios_date'}
+=item $info{'system_bios_date'}
 
-=item $info->{'system_bios_version'}
+=item $info{'system_bios_version'}
 
-=item $info->{'video_bios_date'}
+=item $info{'video_bios_date'}
 
-=item $info->{'video_bios_version'}
+=item $info{'video_bios_version'}
 
-=item $info->{'video_adapter'}
+=item $info{'video_adapter'}
 
-=item $info->{'display_resolution'}
+=item $info{'display_resolution'}
 
-=item $info->{'refresh_rate'}
+=item $info{'refresh_rate'}
 
-=item $info->{'osversion'}
+=item $info{'osversion'}
 
-=item $info->{'service_pack'}
+=item $info{'service_pack'}
 
-=item $info->{'system_root'}
+=item $info{'system_root'}
 
-=item $info->{'install_date'}
+=item $info{'install_date'}
 
-=item $info->{'install_time'}
+=item $info{'install_time'}
 
-=item $info->{'registered_owner'}
+=item $info{'registered_owner'}
 
-=item $info->{'registered_organization'}
+=item $info{'registered_organization'}
 
 =back
 
