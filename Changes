@@ -1,5 +1,10 @@
 Revision history for Perl extension Win32::MachineInfo.
 
+** 0.03 2003-01-19
+
+Tidied up all the registry value references to cope with undefined
+values.
+
 ** 0.02 2003-01-16
 
 Some systems did not have the VideoBiosVersion key, and the code that

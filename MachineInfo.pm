@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 our @EXPORT_OK = qw(GetMachineInfo);
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use Win32::TieRegistry qw(:KEY_);
 use POSIX qw(ceil strftime);
@@ -13,6 +13,7 @@ use POSIX qw(ceil strftime);
 sub reformat_date
 {
     my $date = shift;
+    return "" unless $date =~ qr(^\d+/\d+/\d+$);
 
     # American date format assumed
     my ($month, $day, $year) = split "/", $date;
@@ -35,88 +36,106 @@ sub GetMachineInfo
     }
     %{$info} = ();
 
-    my $machkey = $Registry->Connect($host, "HKEY_LOCAL_MACHINE",
+    my $hklm = $Registry->Connect($host, "HKEY_LOCAL_MACHINE",
         {Access=>KEY_READ})
         or return 0;
 
-    $machkey->SplitMultis(1);
-
-    my $key;
+    $hklm->SplitMultis(1);
 
     # OS Information
-    my $cv = $machkey->{"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"};
-    my $osversion = $cv->{"CurrentVersion"};
-    $info->{"osversion"} = $cv->{"CurrentVersion"};
-    $info->{"service_pack"} = $cv->{"CSDVersion"};
-    $info->{"registered_organization"} = $cv->{"RegisteredOrganization"};
-    $info->{"registered_owner"} = $cv->{"RegisteredOwner"};
-    $info->{"system_root"} = $cv->{"SystemRoot"};
-    my $install_date = hex($cv->{"InstallDate"});
-    $info->{"install_date"} = strftime("%Y-%m-%d", localtime $install_date);
-    $info->{"install_time"} = strftime("%H:%M", localtime $install_date);
+    my $osinfo = $hklm->{"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"};
+    $info->{"osversion"} = $osinfo->{"CurrentVersion"} || "";
+    $info->{"service_pack"} = $osinfo->{"CSDVersion"} || "";
+    $info->{"registered_organization"} =
+        $osinfo->{"RegisteredOrganization"} || "";
+    $info->{"registered_owner"} = $osinfo->{"RegisteredOwner"} || "";
+    $info->{"system_root"} = $osinfo->{"SystemRoot"} || "";
+    if (my $install_date = hex($osinfo->{"InstallDate"})) {
+        $info->{"install_date"} = strftime("%Y-%m-%d", localtime $install_date);
+        $info->{"install_time"} = strftime("%H:%M", localtime $install_date);
+    } else {
+        $info->{"install_date"} = $info->{"install_time"} = "";
+    }
     
-    $info->{"product_type"} = $machkey->{"SYSTEM\\CurrentControlSet\\Control\\ProductOptions\\ProductType"}; # 2000 only
+    if (my $product_type = $hklm->{"SYSTEM\\CurrentControlSet\\Control\\ProductOptions\\ProductType"}) {
+        $info->{"product_type"} =  $product_type;
+    }
 
     # IE Version
-    $key = $machkey->{"SOFTWARE\\Microsoft\\Internet Explorer"};
-    $info->{"ieversion"} = $key->{"Version"};
+    my $ieinfo = $hklm->{"SOFTWARE\\Microsoft\\Internet Explorer"};
+    $info->{"ieversion"} = $ieinfo->{"Version"} || "";
 
     # Computer Name
-    $key = $machkey->{"SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName"};
-    $info->{"computer_name"} = $key->{"ComputerName"};
+    my $computer_name = $hklm->{"SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName"};
+    $info->{"computer_name"} = $computer_name || "";
 
     # BIOS Information
-    my @versions;
-    $key = $machkey->{"HARDWARE\\DESCRIPTION\\System"};
-    $info->{"system_bios_date"} = reformat_date($key->{"SystemBiosDate"});
-    if (my $system_bios = $key->{"SystemBiosVersion"}) {
+    my $systeminfo = $hklm->{"HARDWARE\\DESCRIPTION\\System"};
+    $info->{"system_bios_date"} = reformat_date($systeminfo->{"SystemBiosDate"});
+    if (my $system_bios = $systeminfo->{"SystemBiosVersion"}) {
         $info->{"system_bios_version"} = ${$system_bios}[0];
+    } else {
+        $info->{"system_bios_version"} = "";
     }
-    $info->{"video_bios_date"} = reformat_date($key->{"VideoBiosDate"});
-    if (my $video_bios = $key->{"VideoBiosVersion"}) {
+    $info->{"video_bios_date"} = reformat_date($systeminfo->{"VideoBiosDate"});
+    if (my $video_bios = $systeminfo->{"VideoBiosVersion"}) {
         $info->{"video_bios_version"} = ${$video_bios}[0];
+    } else {
+        $info->{"video_bios_version"} = "";
     }
 
     # Processor Information
-    $key = $machkey->{"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"};
-    $info->{"number_of_processors"} = $key->{"NUMBER_OF_PROCESSORS"};
-    $key = $machkey->{"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"};
-    # note the processor speed can vary (slightly) from boot to boot
-    $info->{"processor_speed"} = hex($key->{"~MHZ"}) . " MHz";
-    #$info->{"processor_name"} = $key->{"ProcessorNameString"}; # 2000 only?
-    $info->{"processor_vendor"} = $key->{"VendorIdentifier"};
-    $info->{"processor_identifier"} = $key->{"Identifier"};
+    $info->{"number_of_processors"} = $hklm->{"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\\NUMBER_OF_PROCESSORS"} || "";
+    my $cpuinfo = $hklm->{"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"};
+    # note that processor speed can vary (slightly) from boot to boot
+    if (my $mhz = hex($cpuinfo->{"~MHZ"})) {
+        $info->{"processor_speed"} = "$mhz MHz";
+    } else {
+        $info->{"processor_speed"} = "";
+    }
+    $info->{"processor_vendor"} = $cpuinfo->{"VendorIdentifier"} || "";
+    $info->{"processor_identifier"} = $cpuinfo->{"Identifier"} || "";
     my $processor_name = cpuid($info->{'processor_vendor'},
                                $info->{'processor_identifier'});
-    $info->{"processor_name"} = $processor_name;
+    $info->{"processor_name"} = $processor_name || "";
 
     # Memory Information
-    my $memory = $machkey->{"HARDWARE\\RESOURCEMAP\\System Resources\\Physical Memory"};
-    $info->{"memory"} = ceil((unpack "L*", $memory->{".Translated"})[-1] / 1024 /1024 + 16) . " MB";
+    my $memoryinfo =
+        $hklm->{"HARDWARE\\RESOURCEMAP\\System Resources\\Physical Memory"};
+    $info->{"memory"} = ceil((unpack "L*", $memoryinfo->{".Translated"})[-1]
+        / 1024 / 1024 + 16) . " MB";
 
     # Video Information
-    $key = $machkey->{"HARDWARE\\DEVICEMAP\\VIDEO"};
+    my $videoinfo = $hklm->{"HARDWARE\\DEVICEMAP\\VIDEO"};
     # According to Q200435, Windows will load \Device\Video0
-    my $keyname = $key->GetValue("\\Device\\Video0");
-    $keyname =~ s/.*\\Services\\//;
-    $key = $machkey->{"SYSTEM\\CurrentControlSet\\Services\\$keyname"};
-    if (my $adapter = $key->{"HardwareInformation.AdapterString"}) {
-        $adapter =~ s/\x00//g;
-        $info->{"video_adapter"} = $adapter;
+    my $videokeyname = $videoinfo->GetValue("\\Device\\Video0");
+    $videokeyname =~ s/.*\\Services\\//;
+    my $videoservice = $hklm->{"SYSTEM\\CurrentControlSet\\Services\\$videokeyname"};
+    if (my $videoadapter = $videoservice->{"HardwareInformation.AdapterString"}) {
+        $videoadapter =~ s/\x00//g;
+        $info->{"video_adapter"} = $videoadapter;
+    } else {
+        $info->{"video_adapter"} = "";
     }
-    #my $description = $key->{"Device Description"}; # 2000 only?
 
     # Display Settings
-    $key = $machkey->{"SYSTEM\\CurrentControlSet\\Hardware Profiles\\Current\\System\\CurrentControlSet\\Services\\$keyname"};
-    my $xres = hex($key->{"DefaultSettings.XResolution"});
-    my $yres = hex($key->{"DefaultSettings.YResolution"});
-    my $bits = hex($key->{"DefaultSettings.BitsPerPel"});
-    $info->{"display_resolution"} = $xres . "x" . $yres . "x". $bits;
-    my $vref = hex($key->{"DefaultSettings.VRefresh"});
-    $info->{"refresh_rate"} = "$vref Hz";
+    my $videoconfig = $hklm->{"SYSTEM\\CurrentControlSet\\Hardware Profiles\\Current\\System\\CurrentControlSet\\Services\\$videokeyname"};
+    my $xres = hex($videoconfig->{"DefaultSettings.XResolution"});
+    my $yres = hex($videoconfig->{"DefaultSettings.YResolution"});
+    my $bits = hex($videoconfig->{"DefaultSettings.BitsPerPel"});
+    if ($xres) {
+        $info->{"display_resolution"} = $xres . "x" . $yres . "x". $bits;
+    } else {
+        $info->{"display_resolution"} = "";
+    }
+    if (my $vref = hex($videoconfig->{"DefaultSettings.VRefresh"})) {
+        $info->{"refresh_rate"} = "$vref Hz";
+    } else {
+        $info->{"refresh_rate"} = "";
+    }
 
-    # Hotfixes
-    if (my $hotfixes = $machkey->{"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Hotfix"}) {
+    # Hotfixes (initial support)
+    if (my $hotfixes = $hklm->{"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Hotfix"}) {
         my @hotfixes = $hotfixes->SubKeyNames;
         $info->{"hotfixes"} = \@hotfixes;
     }
@@ -240,7 +259,7 @@ __END__
 
 =head1 NAME
 
-Win32::MachineInfo - Retrieve Windows NT/2000 OS and Hardware Info
+Win32::MachineInfo - Windows NT/2000 OS and Hardware Info
 
 =head1 SYNOPSIS
 
