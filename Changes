@@ -1,0 +1,18 @@
+Revision history for Perl extension Win32::MachineInfo.
+
+** 0.02 2003-01-16
+
+Some systems did not have the VideoBiosVersion key, and the code that
+referred to it assumed it did and failed because it was attempting
+to do @{undef}, so the code was modified to check that the key
+existed before dereferencing it. Similarly for the SystemBiosVersion
+registry key.
+
+The HardwareInformation.AdapterString and the Hotfix registry keys
+did not exist on some systems, and both values required manipulation
+before being placed into the %info hash, so the code was bracketed
+in if statements to avoid error messages.
+
+** 0.01 2003-01-15
+
+Initial release.
