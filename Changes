@@ -1,5 +1,11 @@
 Revision history for Perl extension Win32::MachineInfo.
 
+** 0.04 2003-01-20
+
+ComputerName now read correctly from the registry.
+
+reformat_date now handles empty or undefined values.
+
 ** 0.03 2003-01-19
 
 Tidied up all the registry value references to cope with undefined

@@ -5,7 +5,7 @@ use strict;
 use warnings;
 
 our @EXPORT_OK = qw(GetMachineInfo);
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use Win32::TieRegistry qw(:KEY_);
 use POSIX qw(ceil strftime);
@@ -13,7 +13,7 @@ use POSIX qw(ceil strftime);
 sub reformat_date
 {
     my $date = shift;
-    return "" unless $date =~ qr(^\d+/\d+/\d+$);
+    return "" unless $date && $date =~ qr(^\d+/\d+/\d+$);
 
     # American date format assumed
     my ($month, $day, $year) = split "/", $date;
@@ -66,7 +66,7 @@ sub GetMachineInfo
     $info->{"ieversion"} = $ieinfo->{"Version"} || "";
 
     # Computer Name
-    my $computer_name = $hklm->{"SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName"};
+    my $computer_name = $hklm->{"SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName\\ComputerName"};
     $info->{"computer_name"} = $computer_name || "";
 
     # BIOS Information
